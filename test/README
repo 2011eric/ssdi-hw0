@@ -1,0 +1,9 @@
+Don't touch tester.py.
+
+Add your tests to homework_tests.py.
+
+Copy your cs5374_sh file to this directory.
+
+Then run:
+
+python tester.py
