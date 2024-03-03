@@ -10,7 +10,7 @@
 
 #define PROMPT "$"
 #define BUF_SIZE 1024 /* initial buffer size for cmds */
-
+#define HISTORY_SIZE 99999 /* max number of cmds in history */
 
 struct task{
     char *cmd;
@@ -18,6 +18,12 @@ struct task{
     int out;
     struct task *next;
 };
+
+struct history{
+    char *data[HISTORY_SIZE];
+    int size;
+} History;
+
 char *trim_whitespaces(char *str){
     if(str == NULL) return NULL;
 
@@ -111,18 +117,26 @@ char **parse_cmd(char *cmd){
     return args;
 }
 
-/* Spwan child process to execute the command, and dup pipe to given fds, return the pid of the child */
+/* Spwan child process to execute the command, and dup pipe to given fds, return the pid of the child, return -1 on error*/
 int launch(int in, int out, char *cmd){
+    //TODO: check if cmd is NULL
+    //TODO: check builtin
     char **args = parse_cmd(cmd), **cur = args;
     int pid;
 
     if((pid = fork()) == 0){
         if(in != STDIN_FILENO) {
-            dup2(in, STDIN_FILENO);
+            if(dup2(in, STDIN_FILENO) == -1){
+                fprintf(stderr, "error: %s %s", strerror(errno), "at child");
+                exit(1);
+            }
             close(in);
         }
         if(out != STDOUT_FILENO){
-            dup2(out, STDOUT_FILENO);
+            if(dup2(out, STDOUT_FILENO) == -1){
+                fprintf(stderr, "error: %s\n %s", strerror(errno), "at child");
+                exit(1);
+            }
             close(out);
         }
             
@@ -131,12 +145,46 @@ int launch(int in, int out, char *cmd){
             fprintf(stderr, "error: %s\n", strerror(errno));
             exit(1);
         }
+    }else if(pid == -1){
+        fprintf(stderr, "error: %s\n", strerror(errno));
+        return -1;
     }
     
     while(*cur) free(*cur++);
     free(args);
     return pid;
+}
+void history_init(){
+    History.size = 0;
+}
+void history_add(char *cmd){
+    /* if the cmd equals to the last cmd in the history, it will not be added */
+    if(History.size > 0 && !strcmp(cmd, History.data[History.size - 1])) return;
+    if(History.size == HISTORY_SIZE){
+        free(History.data[0]);
+        for(int i = 0; i < HISTORY_SIZE - 1; i++){
+            History.data[i] = History.data[i + 1];
+        }
+    }
+    History.data[History.size++] = strdup(cmd);
+    return;
+}
 
+/* where n is a positive integer, your shell should print out the last n
+command history, or all command history if the total command number is less than n. For n larger than 10,
+treat it as 10 */
+void history_show(int n){
+    if(n > 10) n = 10;
+    for(int i = 0; i < n && i < History.size; i++){
+        printf("%05d %s\n", i + 1, History.data[History.size - i - 1]);
+    }
+}
+
+void history_clear(){
+    for(int i = 0; i < History.size; i++){
+        free(History.data[i]);
+    }
+    History.size = 0;
 }
 
 /*  Main loop of the shell 
@@ -147,13 +195,14 @@ int launch(int in, int out, char *cmd){
     3. Execute the commands                           */
 void main_loop(){
     char *line;
-    char **cmds, **cur;
-    int prev_fd = STDIN_FILENO;
+    char **cmds, **cur_cmd;
+    int prev_fd, next_fd;
     int pipe_fd[2];
-    int w, wstatus;
-    int total_process = 0;
+    int w, wstatus, pid;
+    int total_process;
 
     do{
+        total_process = 0;
         printf("%s", PROMPT);
         fflush(stdout);
         line = read_line();
@@ -161,41 +210,61 @@ void main_loop(){
         if(line == NULL) return;
 
         cmds = parse_line(line);
-        cur = cmds;
-        while(*cur && **cur != '\0'){
-            
-            if(*(cur+1) == NULL){ /* last command */
-                launch(prev_fd, STDOUT_FILENO, *cur);
-            }else {
+        cur_cmd = cmds;
+
+        while(*cur_cmd){
+            if(*cur_cmd == cmds[0]) prev_fd = dup(STDIN_FILENO);
+            if(prev_fd == -1){
+                fprintf(stderr, "error: %s\n", strerror(errno));
+                exit(1);
+            }
+
+            if(*(cur_cmd+1) != NULL){ /* not the last cmd in the pipeline */
                 if(pipe(pipe_fd) == -1){
                     fprintf(stderr, "error: %s\n", strerror(errno));
                     exit(1);
                 }
-                launch(prev_fd, pipe_fd[1], *cur);
-                close(pipe_fd[1]);
+                next_fd = pipe_fd[1];
+            }else{
+                next_fd = dup(STDOUT_FILENO);
+                if(next_fd == -1){
+                    fprintf(stderr, "error: %s\n", strerror(errno));
+                    exit(1);
+                }
             }
-            if(prev_fd != STDIN_FILENO) close(prev_fd);
-            prev_fd = pipe_fd[0]; /* next process will read from this pipe */
-            //TODO: close pipe
-            free(*cur);
-            cur++;
-            total_process++;
+            fprintf(stderr, "prev_fd: %d, next_fd: %d\n", prev_fd, next_fd); //TODO: remove this line
+            pid = launch(prev_fd, next_fd, *cur_cmd);
+            if(pid == -1){
+                fprintf(stderr, "error: %s\n", "launch failed");
+                exit(1);
+            }else{
+                fprintf(stderr, "Process %d created\n", pid); //TODO: remove this line
+                total_process += pid ? 1 : 0;
+            }
+            close(prev_fd);
+            close(next_fd);
+            prev_fd = pipe_fd[0];
+            cur_cmd++;
         }
 
         //TODO: wait all the childs
         do{
-            if(total_process == 0) break;
             w = waitpid(-1, &wstatus, WUNTRACED);
             if(w == -1){
                 fprintf(stderr, "error: %s\n", strerror(errno));
                 exit(1);
             }else if(WIFEXITED(wstatus) || WIFSIGNALED(wstatus)){
                 total_process--;
-                //fprintf(stderr, "Process %d exited, %d left\n", w, total_process); //TODO:remove this line
+                fprintf(stderr, "Process %d exited, %d left\n", w, total_process); //TODO:remove this line
+                if(total_process == 0) break;
+            }else{
+                fprintf(stderr, "error: %s\n", "unknown error");
+                exit(1);
             }
             // TODO: check wstatus
-        }while(!WIFEXITED(wstatus) && !WIFSIGNALED(wstatus) && total_process > 0);
+        }while(total_process > 0);
 
+        history_add(line);
         free(line);
         free(cmds);
     }while(1);
@@ -203,10 +272,10 @@ void main_loop(){
 
 
 int main(int argc, char *argv[]){
-    setvbuf(stdout, NULL, _IONBF, 0);
+    //setvbuf(stdout, NULL, _IONBF, 0);
 
 
-
+    history_init();
 
     main_loop();
 
