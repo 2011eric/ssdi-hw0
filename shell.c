@@ -1,14 +1,23 @@
 #include <unistd.h>
-#include <string.h>
 #include <stdio.h>
+#include <string.h>
 #include <stdlib.h>
 #include <errno.h>
 #include <limits.h>
+#include <ctype.h>
+#include <sys/types.h>
+#include <sys/wait.h>
 
 #define PROMPT "$"
 #define BUF_SIZE 1024 /* initial buffer size for cmds */
 
 
+struct task{
+    char *cmd;
+    int in;
+    int out;
+    struct task *next;
+};
 char *trim_whitespaces(char *str){
     if(str == NULL) return NULL;
 
@@ -26,6 +35,7 @@ char *trim_whitespaces(char *str){
 
     return new_str;
 }
+
 /* Read a line from stdin and return it, return NULL if received EOF */
 char *read_line(){
     char *line = NULL; /* declare to NULL and let getline allocate the memory */
@@ -57,10 +67,8 @@ char **parse_line(char *line){
         exit(1);
     }
 
-    //TODO: dynamic allocation
     while((token = strsep(&line, "|")) != NULL){
-        if(*token)
-        cmds[i++] = token;
+        cmds[i++] = strdup(token);
         if(i == size){
             size = size * 2;
             cmds = realloc(cmds, sizeof(char*) * size);
@@ -71,21 +79,63 @@ char **parse_line(char *line){
         }
     }
     cmds[i] = NULL;
-    printf("%d\n", i);
     return cmds;
 }
 
 /* Split the command into multiple arguments by " " */
-char **parse_cmd(){
+char **parse_cmd(char *cmd){
     int i = 0, size = BUF_SIZE;
     char *token;
     char **args;
 
+    if(cmd == NULL) return NULL;
+
     args = malloc(sizeof(char*) * size);
+    while((token = strsep(&cmd, " ")) != NULL){
+        if(*token) args[i++] = strdup(token);
+        if(i == size){
+            if(size == _POSIX_ARG_MAX){
+                fprintf(stderr, "error: %s\n", "argument list too long");
+                exit(1);
+            }
+            size = size * 2 > _POSIX_ARG_MAX ? _POSIX_ARG_MAX : size * 2;
+            args = realloc(args, sizeof(char*) * size);
+            if(args == NULL){
+                fprintf(stderr, "error: %s\n", "realloc failed");
+                exit(1);
+            }
+        }
+    }
+
+    args[i] = NULL;
+    return args;
 }
 
-/* Spwan child process to execute the command, and dup pipe to given fds */
-void spawn_child(int in, int out, char **args){
+/* Spwan child process to execute the command, and dup pipe to given fds, return the pid of the child */
+int launch(int in, int out, char *cmd){
+    char **args = parse_cmd(cmd), **cur = args;
+    int pid;
+
+    if((pid = fork()) == 0){
+        if(in != STDIN_FILENO) {
+            dup2(in, STDIN_FILENO);
+            close(in);
+        }
+        if(out != STDOUT_FILENO){
+            dup2(out, STDOUT_FILENO);
+            close(out);
+        }
+            
+        //TODO: change to execv
+        if(execvp(args[0], args) == -1){
+            fprintf(stderr, "error: %s\n", strerror(errno));
+            exit(1);
+        }
+    }
+    
+    while(*cur) free(*cur++);
+    free(args);
+    return pid;
 
 }
 
@@ -97,17 +147,54 @@ void spawn_child(int in, int out, char **args){
     3. Execute the commands                           */
 void main_loop(){
     char *line;
-    char **cmds;
+    char **cmds, **cur;
+    int prev_fd = STDIN_FILENO;
+    int pipe_fd[2];
+    int w, wstatus;
+    int total_process = 0;
 
     do{
-        printf("%s ", PROMPT);
+        printf("%s", PROMPT);
+        fflush(stdout);
         line = read_line();
         /* received EOF */
         if(line == NULL) return;
 
         cmds = parse_line(line);
-        char **cur = cmds;
-        while(*cur) printf("%s\n", *cur++);
+        cur = cmds;
+        while(*cur && **cur != '\0'){
+            
+            if(*(cur+1) == NULL){ /* last command */
+                launch(prev_fd, STDOUT_FILENO, *cur);
+            }else {
+                if(pipe(pipe_fd) == -1){
+                    fprintf(stderr, "error: %s\n", strerror(errno));
+                    exit(1);
+                }
+                launch(prev_fd, pipe_fd[1], *cur);
+                close(pipe_fd[1]);
+            }
+            if(prev_fd != STDIN_FILENO) close(prev_fd);
+            prev_fd = pipe_fd[0]; /* next process will read from this pipe */
+            //TODO: close pipe
+            free(*cur);
+            cur++;
+            total_process++;
+        }
+
+        //TODO: wait all the childs
+        do{
+            if(total_process == 0) break;
+            w = waitpid(-1, &wstatus, WUNTRACED);
+            if(w == -1){
+                fprintf(stderr, "error: %s\n", strerror(errno));
+                exit(1);
+            }else if(WIFEXITED(wstatus) || WIFSIGNALED(wstatus)){
+                total_process--;
+                //fprintf(stderr, "Process %d exited, %d left\n", w, total_process); //TODO:remove this line
+            }
+            // TODO: check wstatus
+        }while(!WIFEXITED(wstatus) && !WIFSIGNALED(wstatus) && total_process > 0);
 
         free(line);
         free(cmds);
@@ -116,7 +203,7 @@ void main_loop(){
 
 
 int main(int argc, char *argv[]){
-
+    setvbuf(stdout, NULL, _IONBF, 0);
 
 
 
