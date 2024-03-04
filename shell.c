@@ -173,7 +173,7 @@ int launch(int in, int out, char *cmd){
             close(out);
         }
         //TODO: change to execv
-        if(execvp(args[0], args) == -1){
+        if(execv(args[0], args) == -1){
             fprintf(stderr, "error: %s\n", strerror(errno));
             while(*cur) free(*cur++);
             free(args);
@@ -197,7 +197,7 @@ void history_init(){
 void history_add(char *line){
     /* if the cmd equals to the last cmd in the history, it will not be added */
     if(History.size > 0 && !strcmp(line, History.data[History.size - 1])) return;
-    if(History.size == HISTORY_SIZE){
+    if(History.size == HISTORY_SIZE){ /* TODO: this is broken*/
         free(History.data[0]);
         for(int i = 0; i < HISTORY_SIZE - 1; i++){
             History.data[i] = History.data[i + 1];

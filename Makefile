@@ -1,9 +1,9 @@
 CC=gcc
-CFLAGS=-Wall -Wextra
-DBFLAGS=-g -fsanitize=address -fsanitize=undefined -fsanitize=leak
+CFLAGS=-Wall
+DBFLAGS=-g -fsanitize=address -fsanitize=undefined -fsanitize=leak -Wextra
 
 all: shell.c
-	$(CC) $(CFLAGS) -o shell shell.c
+	$(CC) $(CFLAGS) -o cs5374_sh shell.c
 debug: shell.c
 	$(CC) $(CFLAGS) $(DBFLAGS) -DDEBUG -o shell shell.c
 test_trim: test_trim.c
