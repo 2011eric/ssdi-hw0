@@ -7,6 +7,7 @@
 #include <ctype.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <signal.h>
 
 #define PROMPT "$"
 #define BUF_SIZE 1024 /* initial buffer size for cmds */
@@ -226,6 +227,7 @@ void history_show(int fd, int n){
 
 
 void history_clear(){
+    DEBUG_PRINT("Clear history\n");
     for(int i = 0; i < History.size; i++){
         free(History.data[i]);
     }
@@ -349,7 +351,7 @@ void main_loop(){
         }
         for(cur_cmd = cmds; *cur_cmd; cur_cmd++) free(*cur_cmd);
         free(cmds);
-        
+
         //TODO: wait all the childs
         while(total_process > 0){
             w = waitpid(-1, &wstatus, WUNTRACED);
@@ -372,13 +374,17 @@ void main_loop(){
     }
 }
 
-
+void termination_handler(int signum){
+    DEBUG_PRINT("Received SIGINT\n");
+    exit(0);
+}
 int main(int argc, char *argv[]){
     //setvbuf(stdout, NULL, _IONBF, 0);
 
 
     history_init();
-
+    atexit(history_clear);
+    signal(SIGINT, termination_handler);
     main_loop();
 
     return 0;
