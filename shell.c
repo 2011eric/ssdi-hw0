@@ -12,17 +12,33 @@
 #define BUF_SIZE 1024 /* initial buffer size for cmds */
 #define HISTORY_SIZE 99999 /* max number of cmds in history */
 
-struct task{
-    char *cmd;
-    int in;
-    int out;
-    struct task *next;
-};
+/* A macro to print debug messages to stderr*/
+#ifdef DEBUG
+#define DEBUG_PRINT(...) do{ fprintf( stderr, __VA_ARGS__ ); } while( 0 )
+#else
+#define DEBUG_PRINT(...) do{ } while ( 0 )
+#endif
 
 struct history{
     char *data[HISTORY_SIZE];
     int size;
 } History;
+
+const char* bultin_commands[] = {
+    "cd",
+    "history",
+    "exit"
+};
+
+int builtin_cd(int fd, char **args);
+int builtin_history(int fd, char **args);
+int builtin_exit(int fd, char **args);
+
+int (*bulitin_func[])(int, char **) = {
+    &builtin_cd,
+    &builtin_history,
+    &builtin_exit
+};
 
 char *trim_whitespaces(char *str){
     if(str == NULL) return NULL;
@@ -65,15 +81,16 @@ char *read_line(){
 char **parse_line(char *line){
     int i = 0, size = BUF_SIZE;
     char *token;
-    char **cmds;
+    char **cmds, *line_copy;
 
+    line_copy = strdup(line);
     cmds = malloc(sizeof(char*) * size);
     if(cmds == NULL) {
         fprintf(stderr, "error: %s\n", "malloc failed");
         exit(1);
     }
 
-    while((token = strsep(&line, "|")) != NULL){
+    while((token = strsep(&line_copy, "|")) != NULL){
         cmds[i++] = strdup(token);
         if(i == size){
             size = size * 2;
@@ -85,6 +102,7 @@ char **parse_line(char *line){
         }
     }
     cmds[i] = NULL;
+    free(line_copy);
     return cmds;
 }
 
@@ -117,12 +135,22 @@ char **parse_cmd(char *cmd){
     return args;
 }
 
-/* Spwan child process to execute the command, and dup pipe to given fds, return the pid of the child, return -1 on error*/
+/* Spwan child process to execute the command, and dup pipe to given fds, return the pid of the child, return -1 on error, 0 to indicate bultin*/
 int launch(int in, int out, char *cmd){
     //TODO: check if cmd is NULL
     //TODO: check builtin
     char **args = parse_cmd(cmd), **cur = args;
     int pid;
+
+    if(!strcmp(args[0], "")) return 0;
+    for(int i = 0; i < sizeof(bultin_commands) / sizeof(char*); i++){
+        if(!strcmp(args[0], bultin_commands[i])){
+            bulitin_func[i](out, args);
+            while(*cur) free(*cur++);
+            free(args);
+            return 0;
+        }
+    }
 
     if((pid = fork()) == 0){
         if(in != STDIN_FILENO) {
@@ -139,7 +167,6 @@ int launch(int in, int out, char *cmd){
             }
             close(out);
         }
-            
         //TODO: change to execv
         if(execvp(args[0], args) == -1){
             fprintf(stderr, "error: %s\n", strerror(errno));
@@ -152,33 +179,45 @@ int launch(int in, int out, char *cmd){
     
     while(*cur) free(*cur++);
     free(args);
+
     return pid;
 }
+
+/* Error during built-in commands execution should not terminates the shell */
 void history_init(){
     History.size = 0;
 }
-void history_add(char *cmd){
+void history_add(char *line){
     /* if the cmd equals to the last cmd in the history, it will not be added */
-    if(History.size > 0 && !strcmp(cmd, History.data[History.size - 1])) return;
+    if(History.size > 0 && !strcmp(line, History.data[History.size - 1])) return;
     if(History.size == HISTORY_SIZE){
         free(History.data[0]);
         for(int i = 0; i < HISTORY_SIZE - 1; i++){
             History.data[i] = History.data[i + 1];
         }
     }
-    History.data[History.size++] = strdup(cmd);
+    History.data[History.size++] = strdup(line);
     return;
 }
 
 /* where n is a positive integer, your shell should print out the last n
 command history, or all command history if the total command number is less than n. For n larger than 10,
 treat it as 10 */
-void history_show(int n){
+void history_show(int fd, int n){
+    FILE *fp;
     if(n > 10) n = 10;
-    for(int i = 0; i < n && i < History.size; i++){
-        printf("%05d %s\n", i + 1, History.data[History.size - i - 1]);
+    if(n > History.size) n = History.size;
+    for(int i = 0; i < n ; i++){
+        if((fp = fdopen(fd, "w")) == NULL){
+            fprintf(stderr, "error: %s\n", strerror(errno));
+            exit(1);
+        }
+        DEBUG_PRINT("Print to fd: %d\n", fd);
+        fprintf(fp, "%5d %s\n", History.size - n + i + 1, History.data[History.size - n + i]);
+        fflush(fp);
     }
 }
+
 
 void history_clear(){
     for(int i = 0; i < History.size; i++){
@@ -187,6 +226,52 @@ void history_clear(){
     History.size = 0;
 }
 
+
+int builtin_cd(int fd, char **args){
+    if(args[1] == NULL){
+        fprintf(stderr, "error: %s\n", "cd: missing argument");
+        return -1;
+    }
+    if(args[2] != NULL){
+        fprintf(stderr, "error: %s\n", "cd: too many arguments");
+        return -1;
+    }
+    if(chdir(args[1]) == -1){
+        fprintf(stderr, "error: %s\n", strerror(errno));
+        return -1;
+    }
+    return 0;
+}
+
+int builtin_history(int fd, char **args){
+    if(args[1] == NULL){
+        history_show(fd, 10);
+    }else {
+        /* contains args, ex history -c or history n*/
+        if(args[2] != NULL){
+            fprintf(stderr, "error: %s\n", "history: too many arguments");
+            return -1;
+        }
+        if(!strcmp(args[1], "-c")){
+            history_clear();
+        }else{
+            for(char *c = args[1]; *c; c++){
+                if(!isdigit(*c)){
+                    fprintf(stderr, "error: %s\n", "history: invalid argument");
+                    return -1;
+                }
+            }
+            history_show(fd, atoi(args[1]));
+        }
+    }
+    return 0;
+}
+
+/*  Exit the shell, this function does not return  */
+int builtin_exit(int fd, char **args){
+    exit(0);
+    return 0;
+}
 /*  Main loop of the shell 
     This funcion will keep spinning and perform: 
     1. Read a line from the user
@@ -201,7 +286,7 @@ void main_loop(){
     int w, wstatus, pid;
     int total_process;
 
-    do{
+    for(;;){
         total_process = 0;
         printf("%s", PROMPT);
         fflush(stdout);
@@ -224,6 +309,7 @@ void main_loop(){
                     fprintf(stderr, "error: %s\n", strerror(errno));
                     exit(1);
                 }
+                DEBUG_PRINT("pipe_fd[0]: %d, pipe_fd[1]: %d\n", pipe_fd[0], pipe_fd[1]);
                 next_fd = pipe_fd[1];
             }else{
                 next_fd = dup(STDOUT_FILENO);
@@ -232,15 +318,19 @@ void main_loop(){
                     exit(1);
                 }
             }
-            fprintf(stderr, "prev_fd: %d, next_fd: %d\n", prev_fd, next_fd); //TODO: remove this line
+            DEBUG_PRINT("prev_fd: %d, next_fd: %d\n", prev_fd, next_fd);
+
+            /* lauch the task */
+            history_add(line);
             pid = launch(prev_fd, next_fd, *cur_cmd);
             if(pid == -1){
                 fprintf(stderr, "error: %s\n", "launch failed");
                 exit(1);
             }else{
-                fprintf(stderr, "Process %d created\n", pid); //TODO: remove this line
+                DEBUG_PRINT("Process %d created\n", pid);
                 total_process += pid ? 1 : 0;
             }
+
             close(prev_fd);
             close(next_fd);
             prev_fd = pipe_fd[0];
@@ -248,26 +338,27 @@ void main_loop(){
         }
 
         //TODO: wait all the childs
-        do{
+        while(total_process > 0){
             w = waitpid(-1, &wstatus, WUNTRACED);
             if(w == -1){
                 fprintf(stderr, "error: %s\n", strerror(errno));
                 exit(1);
             }else if(WIFEXITED(wstatus) || WIFSIGNALED(wstatus)){
                 total_process--;
-                fprintf(stderr, "Process %d exited, %d left\n", w, total_process); //TODO:remove this line
+                DEBUG_PRINT("Process %d exited, %d left\n", w, total_process);
                 if(total_process == 0) break;
             }else{
                 fprintf(stderr, "error: %s\n", "unknown error");
                 exit(1);
             }
             // TODO: check wstatus
-        }while(total_process > 0);
+        }
 
-        history_add(line);
+        
         free(line);
+        for(cur_cmd = cmds; *cur_cmd; cur_cmd++) free(*cur_cmd);
         free(cmds);
-    }while(1);
+    }
 }
 
 
