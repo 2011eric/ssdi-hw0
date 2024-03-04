@@ -81,9 +81,10 @@ char *read_line(){
 char **parse_line(char *line){
     int i = 0, size = BUF_SIZE;
     char *token;
-    char **cmds, *line_copy;
+    char **cmds;
+    char *line_copy, *tofree;
 
-    line_copy = strdup(line);
+    tofree = line_copy = strdup(line);
     cmds = malloc(sizeof(char*) * size);
     if(cmds == NULL) {
         fprintf(stderr, "error: %s\n", "malloc failed");
@@ -96,42 +97,45 @@ char **parse_line(char *line){
             size = size * 2;
             cmds = realloc(cmds, sizeof(char*) * size);
             if(cmds == NULL){
-                fprintf(stderr, "error: %s\n", "realloc failed");
+                fprintf(stderr, "error: %s\n", "realloc failed"); // TODO: free all tokens
                 exit(1);
             }
         }
     }
     cmds[i] = NULL;
-    free(line_copy);
+    free(tofree); /* Note that strsep will change line_copy ptr, so we need to save it */
+
     return cmds;
 }
 
 /* Split the command into multiple arguments by " " */
 char **parse_cmd(char *cmd){
     int i = 0, size = BUF_SIZE;
-    char *token;
+    char *token, *tofree, *cmd_copy;
     char **args;
 
     if(cmd == NULL) return NULL;
 
+    tofree = cmd_copy = strdup(cmd);
     args = malloc(sizeof(char*) * size);
-    while((token = strsep(&cmd, " ")) != NULL){
+    while((token = strsep(&cmd_copy, " ")) != NULL){
         if(*token) args[i++] = strdup(token);
         if(i == size){
             if(size == _POSIX_ARG_MAX){
-                fprintf(stderr, "error: %s\n", "argument list too long");
+                fprintf(stderr, "error: %s\n", "argument list too long"); // TODO: free all tokens
                 exit(1);
             }
             size = size * 2 > _POSIX_ARG_MAX ? _POSIX_ARG_MAX : size * 2;
             args = realloc(args, sizeof(char*) * size);
             if(args == NULL){
-                fprintf(stderr, "error: %s\n", "realloc failed");
+                fprintf(stderr, "error: %s\n", "realloc failed"); // TODO: free all tokens
                 exit(1);
             }
         }
     }
 
     args[i] = NULL;
+    free(tofree);
     return args;
 }
 
@@ -170,6 +174,8 @@ int launch(int in, int out, char *cmd){
         //TODO: change to execv
         if(execvp(args[0], args) == -1){
             fprintf(stderr, "error: %s\n", strerror(errno));
+            while(*cur) free(*cur++);
+            free(args);
             exit(1);
         }
     }else if(pid == -1){
@@ -293,8 +299,13 @@ void main_loop(){
         line = read_line();
         /* received EOF */
         if(line == NULL) return;
-
+        if(*line == '\0') {
+            free(line);
+            continue;
+        }
+        history_add(line);
         cmds = parse_line(line);
+        free(line);
         cur_cmd = cmds;
 
         while(*cur_cmd){
@@ -321,7 +332,7 @@ void main_loop(){
             DEBUG_PRINT("prev_fd: %d, next_fd: %d\n", prev_fd, next_fd);
 
             /* lauch the task */
-            history_add(line);
+
             pid = launch(prev_fd, next_fd, *cur_cmd);
             if(pid == -1){
                 fprintf(stderr, "error: %s\n", "launch failed");
@@ -336,7 +347,9 @@ void main_loop(){
             prev_fd = pipe_fd[0];
             cur_cmd++;
         }
-
+        for(cur_cmd = cmds; *cur_cmd; cur_cmd++) free(*cur_cmd);
+        free(cmds);
+        
         //TODO: wait all the childs
         while(total_process > 0){
             w = waitpid(-1, &wstatus, WUNTRACED);
@@ -355,9 +368,7 @@ void main_loop(){
         }
 
         
-        free(line);
-        for(cur_cmd = cmds; *cur_cmd; cur_cmd++) free(*cur_cmd);
-        free(cmds);
+        
     }
 }
 
