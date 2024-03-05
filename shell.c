@@ -95,6 +95,7 @@ char **parse_line(char *line){
     while((token = strsep(&line_copy, "|")) != NULL){
         cmds[i++] = strdup(token);
         if(i == size){
+            DEBUG_PRINT("realloc for cmd args, size: %d\n", size);
             size = size * 2;
             cmds = realloc(cmds, sizeof(char*) * size);
             if(cmds == NULL){
@@ -104,8 +105,7 @@ char **parse_line(char *line){
         }
     }
     cmds[i] = NULL;
-    free(tofree); /* Note that strsep will change line_copy ptr, so we need to save it */
-
+    free(tofree);
     return cmds;
 }
 
@@ -198,10 +198,9 @@ void history_add(char *line){
     /* if the cmd equals to the last cmd in the history, it will not be added */
     if(History.size > 0 && !strcmp(line, History.data[History.size - 1])) return;
     if(History.size == HISTORY_SIZE){ /* TODO: this is broken*/
-        free(History.data[0]);
-        for(int i = 0; i < HISTORY_SIZE - 1; i++){
-            History.data[i] = History.data[i + 1];
-        }
+        fprintf(stderr, "error: %s\n", "history is full");
+        free(line); //TODO: i'm not sure if it is a good idea to free the line here
+        exit(1);
     }
     History.data[History.size++] = strdup(line);
     return;
@@ -293,7 +292,6 @@ void main_loop(){
     int pipe_fd[2];
     int w, wstatus, pid;
     int total_process;
-
     for(;;){
         total_process = 0;
         printf("%s", PROMPT);
@@ -380,7 +378,6 @@ void termination_handler(int signum){
 }
 int main(int argc, char *argv[]){
     //setvbuf(stdout, NULL, _IONBF, 0);
-
 
     history_init();
     atexit(history_clear);
