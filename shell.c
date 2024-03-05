@@ -276,6 +276,10 @@ int builtin_history(int fd, char **args){
 
 /*  Exit the shell, this function does not return  */
 int builtin_exit(int fd, char **args){
+    if(args[1] != NULL){
+        fprintf(stderr, "error: %s\n", "exit: too many arguments");
+        return -1;
+    }
     exit(0);
     return 0;
 }
